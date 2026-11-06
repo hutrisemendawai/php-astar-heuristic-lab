@@ -1,0 +1,33 @@
+{
+    "name": "hutrisemendawai/php-astar-heuristic-lab",
+    "description": "A* heuristic comparison benchmark and 2D game",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "phpgl/visu": "^1.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "3.95.28",
+        "phpstan/phpstan": "2.2.17",
+        "phpunit/phpunit": "11.5.57"
+    },
+    "autoload": {
+        "psr-4": {
+            "AStarLab\\Core\\": "src/Core/",
+            "AStarLab\\Game\\": "src/Game/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "AStarLab\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "stan": "phpstan analyse --configuration=phpstan.neon",
+        "cs": "php-cs-fixer fix --dry-run --diff"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

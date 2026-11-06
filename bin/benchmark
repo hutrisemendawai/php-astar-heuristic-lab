@@ -1,0 +1,198 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use AStarLab\Core\Benchmark\BenchmarkRunner;
+use AStarLab\Core\Benchmark\CsvExporter;
+
+$autoload = dirname(__DIR__) . '/vendor/autoload.php';
+if (is_file($autoload)) {
+    require $autoload;
+} else {
+    require dirname(__DIR__) . '/tests/bootstrap.php';
+}
+
+$options = [
+    'n-seed' => 30,
+    'warmup' => 20,
+    'iterations' => 50,
+    'base-seed' => 1000,
+    'out' => 'results/',
+    'map-strategy' => 'pre-verified',
+    'engine' => 'xoshiro',
+    'tie-break' => 'insertionOrder',
+    'priority' => 'negate',
+    'no-jit' => false,
+];
+
+foreach (array_slice($argv, 1) as $argument) {
+    if ($argument === '--no-jit') {
+        $options['no-jit'] = true;
+        continue;
+    }
+
+    if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
+        fwrite(STDERR, "Options must use --name=value (except --no-jit).\n");
+        exit(2);
+    }
+
+    [$name, $value] = explode('=', substr($argument, 2), 2);
+    if (!array_key_exists($name, $options) || $name === 'no-jit') {
+        fwrite(STDERR, sprintf("Unknown option: --%s\n", $name));
+        exit(2);
+    }
+    $options[$name] = in_array($name, ['n-seed', 'warmup', 'iterations', 'base-seed'], true)
+        ? filter_var($value, FILTER_VALIDATE_INT)
+        : $value;
+}
+
+if (in_array(false, array_intersect_key($options, array_flip(['n-seed', 'warmup', 'iterations', 'base-seed'])), true)) {
+    fwrite(STDERR, "Numeric options must contain integers.\n");
+    exit(2);
+}
+if (!in_array($options['engine'], ['xoshiro', 'mt19937'], true)) {
+    fwrite(STDERR, "Engine must be xoshiro or mt19937.\n");
+    exit(2);
+}
+if (!in_array($options['priority'], ['negate', 'min-class'], true)) {
+    fwrite(STDERR, "Priority must be negate or min-class.\n");
+    exit(2);
+}
+if (!in_array($options['tie-break'], ['none', 'insertionOrder'], true)) {
+    fwrite(STDERR, "Tie break must be none or insertionOrder.\n");
+    exit(2);
+}
+
+if ($options['no-jit']) {
+    ini_set('opcache.jit', 'off');
+    ini_set('opcache.jit_buffer_size', '0');
+}
+
+$opcacheStatus = function_exists('opcache_get_status') ? opcache_get_status(false) : false;
+$jitEnabled = is_array($opcacheStatus) && (bool) ($opcacheStatus['jit']['enabled'] ?? false);
+if (!$jitEnabled && !$options['no-jit']) {
+    fwrite(STDERR, "WARNING: OPcache JIT is not active. Results are not a JIT run; use php.ini.benchmark.\n");
+}
+
+$start = microtime(true);
+$runner = new BenchmarkRunner();
+$results = $runner->run(
+    (int) $options['n-seed'],
+    (int) $options['warmup'],
+    (int) $options['iterations'],
+    (int) $options['base-seed'],
+    (string) $options['map-strategy'],
+    (string) $options['engine'],
+    $options['priority'] === 'negate',
+    (string) $options['tie-break'],
+);
+
+$outputDirectory = rtrim((string) $options['out'], DIRECTORY_SEPARATOR);
+if ($outputDirectory === '') {
+    $outputDirectory = '.';
+}
+if (!is_dir($outputDirectory) && !mkdir($outputDirectory, 0775, true) && !is_dir($outputDirectory)) {
+    fwrite(STDERR, sprintf("Unable to create output directory: %s\n", $outputDirectory));
+    exit(1);
+}
+
+$exporter = new CsvExporter();
+$exporter->write(
+    $outputDirectory . '/raw.csv',
+    ['scenario_id', 'size', 'density', 'heuristic', 'scheme', 'seed', 'T_exec_median_us', 'N_exp', 'M_peak', 'C_path', 'C_star', 'costGapPct'],
+    $results['raw'],
+);
+$exporter->write(
+    $outputDirectory . '/summary_geometric.csv',
+    ['ID Skenario', 'Ukuran Grid', 'Kepadatan', 'Heuristik', 'Rata-rata T_exec', 'Stddev T_exec', 'Rata-rata N_exp', 'M_peak', 'costGapPct'],
+    array_map(static fn (array $row): array => [
+        'ID Skenario' => $row['id'],
+        'Ukuran Grid' => $row['size'],
+        'Kepadatan' => sprintf('%.0f%%', (float) $row['density'] * 100),
+        'Heuristik' => $row['heuristic'],
+        'Rata-rata T_exec' => $row['T_exec_median_us'],
+        'Stddev T_exec' => $results['statistics'][$row['id']]['stddev'],
+        'Rata-rata N_exp' => $row['N_exp'],
+        'M_peak' => $row['M_peak'],
+        'costGapPct' => $row['costGapPct'],
+    ], $results['geometric']),
+);
+$exporter->write(
+    $outputDirectory . '/summary_uniform.csv',
+    ['ID Skenario', 'Ukuran Grid', 'Kepadatan', 'Heuristik', 'Rata-rata T_exec', 'Stddev T_exec', 'Rata-rata N_exp', 'M_peak', 'Rata-rata C_path', 'Rata-rata costGapPct', 'Maks costGapPct'],
+    array_map(static fn (array $row): array => [
+        'ID Skenario' => $row['id'],
+        'Ukuran Grid' => $row['size'],
+        'Kepadatan' => sprintf('%.0f%%', (float) $row['density'] * 100),
+        'Heuristik' => $row['heuristic'],
+        'Rata-rata T_exec' => $row['T_exec_median_us'],
+        'Stddev T_exec' => $results['statistics'][$row['id']]['stddev'],
+        'Rata-rata N_exp' => $row['N_exp'],
+        'M_peak' => $row['M_peak'],
+        'Rata-rata C_path' => $row['C_path'],
+        'Rata-rata costGapPct' => $row['costGapPct'],
+        'Maks costGapPct' => $row['costGapPct_max'],
+    ], $results['uniform']),
+);
+file_put_contents($outputDirectory . '/seeds_used.json', json_encode($results['seeds'], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+
+$lock = is_file(dirname(__DIR__) . '/composer.lock')
+    ? json_decode((string) file_get_contents(dirname(__DIR__) . '/composer.lock'), true, 512, JSON_THROW_ON_ERROR)
+    : [];
+$packages = [];
+foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
+    $packages[$package['name']] = $package['version'];
+}
+$cpuInfo = is_file('/proc/cpuinfo') ? (string) file_get_contents('/proc/cpuinfo') : '';
+preg_match('/^model name\s*:\s*(.+)$/m', $cpuInfo, $cpuMatch);
+$gitCommit = '';
+exec('git rev-parse HEAD 2>/dev/null', $gitOutput, $gitStatus);
+if ($gitStatus === 0) {
+    $gitCommit = implode("\n", $gitOutput);
+}
+$metadata = [
+    'php_version' => PHP_VERSION,
+    'opcache_enabled' => is_array($opcacheStatus),
+    'jit_enabled' => $jitEnabled,
+    'jit_requested_disabled' => $options['no-jit'],
+    'jit_mode' => ini_get('opcache.jit'),
+    'jit_buffer_size' => ini_get('opcache.jit_buffer_size'),
+    'os' => PHP_OS_FAMILY . ' ' . php_uname('r'),
+    'cpu' => $cpuMatch[1] ?? php_uname('m'),
+    'composer_packages' => $packages,
+    'git_commit' => $gitCommit,
+    'parameters' => [
+        'n_seed' => $options['n-seed'],
+        'warmup' => $options['warmup'],
+        'iterations' => $options['iterations'],
+        'base_seed' => $options['base-seed'],
+        'map_strategy' => $options['map-strategy'],
+        'engine' => $options['engine'],
+        'priority' => $options['priority'],
+        'tie_break' => $options['tie-break'],
+    ],
+    'seeds' => $results['seeds'],
+    'timing_statistics' => $results['statistics'],
+    'summary_metrics' => array_merge($results['geometric'], $results['uniform']),
+    'duration_seconds' => microtime(true) - $start,
+];
+file_put_contents($outputDirectory . '/metadata.json', json_encode($metadata, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+
+fwrite(STDOUT, "| ID | Grid | Density | Heuristic | Scheme | Mean T_exec (µs) | Mean N_exp | Mean cost gap (%) | ΔN_exp (%) |\n");
+fwrite(STDOUT, "|---|---:|---:|---|---|---:|---:|---:|---:|\n");
+foreach (array_merge($results['geometric'], $results['uniform']) as $row) {
+    fwrite(STDOUT, sprintf(
+        "| %s | %d | %.0f%% | %s | %s | %.2f | %.1f | %.5f | %.2f |\n",
+        $row['id'],
+        $row['size'],
+        (int) round((float) $row['density'] * 100),
+        $row['heuristic'],
+        $row['scheme'],
+        $row['T_exec_median_us'],
+        $row['N_exp'],
+        $row['costGapPct'],
+        $row['deltaNExpPct'],
+    ));
+}
+fwrite(STDOUT, sprintf("Wrote %d scenarios and %d map/config rows to %s (%d seconds).\n", 36, count($results['raw']), $outputDirectory, (int) (microtime(true) - $start)));
